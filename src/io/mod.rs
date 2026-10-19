@@ -2321,7 +2321,7 @@ pub fn save_to_bytes(
 ) -> Result<Vec<u8>, String> {
     let perf = crate::perf::enabled();
     let total_started = iced::time::Instant::now();
-    let doc = prepare_document_for_save(doc.clone(), version);
+    let doc = prepare_document_for_save_format(doc.clone(), version, ext);
     let write_started = iced::time::Instant::now();
     let result = ocs_save::serialize_document(&doc, ext);
     if perf {
@@ -2347,14 +2347,27 @@ pub fn save_to_bytes(
 /// second clone and the live document is never touched. Both
 /// [`save_to_bytes`] and the web worker offload call this exactly once per
 /// save, so there is one implementation of the preparation for every target.
-pub fn prepare_document_for_save(mut doc: CadDocument, version: codec::DxfVersion) -> CadDocument {
+pub fn prepare_document_for_save(doc: CadDocument, version: codec::DxfVersion) -> CadDocument {
+    prepare_document_for_save_format(doc, version, "dwg")
+}
+
+/// Prepare a save copy with format-specific dimension geometry.
+pub fn prepare_document_for_save_format(
+    mut doc: CadDocument,
+    version: codec::DxfVersion,
+    ext: &str,
+) -> CadDocument {
     let perf = crate::perf::enabled();
     doc.version = version;
     let styles_started = perf.then(iced::time::Instant::now);
     sync_current_styles_on_save(&mut doc);
     let styles_ms = crate::perf::elapsed_ms(styles_started);
     let dimensions_started = perf.then(iced::time::Instant::now);
-    crate::modules::draw::modify::explode::bake_dimension_blocks(&mut doc);
+    if ext.eq_ignore_ascii_case("dxf") {
+        crate::modules::draw::modify::explode::bake_dimension_blocks_for_dxf(&mut doc);
+    } else {
+        crate::modules::draw::modify::explode::bake_dimension_blocks(&mut doc);
+    }
     let dimensions_ms = crate::perf::elapsed_ms(dimensions_started);
     if perf {
         crate::perf_record!(
