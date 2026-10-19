@@ -4748,6 +4748,60 @@ fn arc_length_symbol_points(
     )
 }
 
+/// Parameter interval where a linear/aligned dimension line crosses its rendered text box.
+/// Used only when baking geometry for DXF export; the DIMENSION entity itself is untouched.
+pub(crate) fn dimension_text_break_interval(
+    dimension: &Dimension,
+    document: &codec::CadDocument,
+    start: codec::types::Vector3,
+    end: codec::types::Vector3,
+) -> Option<(f64, f64)> {
+    if !matches!(dimension, Dimension::Aligned(_) | Dimension::Linear(_)) {
+        return None;
+    }
+    let style_name = dimension.base().style_name.as_str();
+    let effective_style = document
+        .dim_styles
+        .iter()
+        .find(|style| {
+            style.name.eq_ignore_ascii_case(style_name)
+                || (style_name.trim().is_empty() && style.name.eq_ignore_ascii_case("Standard"))
+        })
+        .map(|style| resolved_dimension_style(style, dimension, document));
+    let style = effective_style.as_ref();
+    let dim_scale = style.map(|style| dimension_style_scale(style, 1.0)).unwrap_or(1.0);
+    let text_height = style.map(|style| style.dimtxt * dim_scale).unwrap_or(2.5 * dim_scale);
+    let Some(bounds) = dimension_text_layout(dimension, style, text_height, dim_scale).break_box else {
+        return None;
+    };
+    let (sin, cos) = bounds.rotation.sin_cos();
+    let local = |point: codec::types::Vector3| {
+        let dx = point.x - bounds.center.x as f64;
+        let dy = point.y - bounds.center.y as f64;
+        [dx * cos + dy * sin, -dx * sin + dy * cos]
+    };
+    let a = local(start);
+    let b = local(end);
+    let delta = [b[0] - a[0], b[1] - a[1]];
+    let half = [
+        (bounds.half_width + bounds.padding) as f64,
+        (bounds.half_height + bounds.padding) as f64,
+    ];
+    let mut enter: f64 = 0.0;
+    let mut exit: f64 = 1.0;
+    for axis in 0..2 {
+        if delta[axis].abs() <= 1.0e-12 {
+            if a[axis].abs() > half[axis] { return None; }
+            continue;
+        }
+        let first = (-half[axis] - a[axis]) / delta[axis];
+        let second = (half[axis] - a[axis]) / delta[axis];
+        enter = enter.max(first.min(second));
+        exit = exit.min(first.max(second));
+        if exit <= enter { return None; }
+    }
+    (exit - enter > 1.0e-9).then_some((enter.clamp(0.0, 1.0), exit.clamp(0.0, 1.0)))
+}
 struct SuppressFlags {
     ext1: bool,
     ext2: bool,
