@@ -104,7 +104,7 @@ pub fn explode_entity(entity: &EntityType, document: &CadDocument) -> Vec<Entity
             .map(normalize_insert_entity)
             .collect(),
         EntityType::MLine(ml) => explode_mline(ml),
-        EntityType::Dimension(dim) => explode_dimension(dim, document),
+        EntityType::Dimension(dim) => explode_dimension(dim, document, false),
         EntityType::MText(t) => crate::entities::mtext::explode_mtext(t, document),
         _ => vec![],
     }
@@ -1025,7 +1025,7 @@ fn norm2(dx: f64, dy: f64, fx: f64, fy: f64) -> (f64, f64) {
     }
 }
 
-fn explode_dimension(dim: &Dimension, doc: &CadDocument) -> Vec<EntityType> {
+fn explode_dimension(dim: &Dimension, doc: &CadDocument, split_text_gap: bool) -> Vec<EntityType> {
     if let Dimension::Arc(arc) = dim {
         if let Some((local_arc, normal)) = crate::entities::dimension::arc_dimension_in_ocs(arc) {
             let (x_axis, y_axis) =
@@ -1035,7 +1035,7 @@ fn explode_dimension(dim: &Dimension, doc: &CadDocument) -> Vec<EntityType> {
                 DVec3::new(x_axis.0, x_axis.1, x_axis.2),
                 DVec3::new(y_axis.0, y_axis.1, y_axis.2),
             );
-            return explode_dimension(&Dimension::Arc(local_arc), doc)
+            return explode_dimension(&Dimension::Arc(local_arc), doc, split_text_gap)
                 .into_iter()
                 .map(|entity| plane.place_entity(entity))
                 .collect();
@@ -1052,7 +1052,7 @@ fn explode_dimension(dim: &Dimension, doc: &CadDocument) -> Vec<EntityType> {
                 DVec3::new(x_axis.0, x_axis.1, x_axis.2),
                 DVec3::new(y_axis.0, y_axis.1, y_axis.2),
             );
-            return explode_dimension(&Dimension::LargeRadial(local_radial), doc)
+            return explode_dimension(&Dimension::LargeRadial(local_radial), doc, split_text_gap)
                 .into_iter()
                 .map(|entity| plane.place_entity(entity))
                 .collect();
@@ -1066,7 +1066,7 @@ fn explode_dimension(dim: &Dimension, doc: &CadDocument) -> Vec<EntityType> {
             DVec3::new(x_axis.0, x_axis.1, x_axis.2),
             DVec3::new(y_axis.0, y_axis.1, y_axis.2),
         );
-        return explode_dimension(&local, doc)
+        return explode_dimension(&local, doc, split_text_gap)
             .into_iter()
             .map(|entity| plane.place_entity(entity))
             .collect();
@@ -1107,7 +1107,12 @@ fn explode_dimension(dim: &Dimension, doc: &CadDocument) -> Vec<EntityType> {
                 let dle = if ticks { met.dimdle } else { 0.0 };
                 let a = v3(d1.x - ux * dle, d1.y - uy * dle, d1.z);
                 let b = v3(d2.x + ux * dle, d2.y + uy * dle, d2.z);
-                result.push(make_seg(&a, &b, &dim_c));
+                let interval = if split_text_gap { crate::entities::dimension::dimension_text_break_interval(dim, doc, a, b) } else { None };
+                if let Some((enter, exit)) = interval {
+                    let at = |t: f64| v3(a.x + (b.x-a.x)*t, a.y + (b.y-a.y)*t, a.z + (b.z-a.z)*t);
+                    if enter > 1.0e-9 { let stop = at(enter); result.push(make_seg(&a, &stop, &dim_c)); }
+                    if exit < 1.0-1.0e-9 { let resume = at(exit); result.push(make_seg(&resume, &b, &dim_c)); }
+                } else { result.push(make_seg(&a, &b, &dim_c)); }
             }
             let gap = ((d2.x - d1.x).powi(2) + (d2.y - d1.y).powi(2)).sqrt();
             let outside = !ticks && met.dimasz > 1e-6 && gap < 2.0 * met.dimasz;
@@ -1486,6 +1491,20 @@ fn next_dimension_block_name(doc: &CadDocument, next: &mut u64) -> String {
 
 /// Build missing anonymous dimension geometry blocks before writing.
 pub fn bake_dimension_blocks(doc: &mut CadDocument) {
+    bake_dimension_blocks_with_text_gap(doc, false);
+}
+
+/// Rebuild anonymous dimension blocks for DXF so their dimension lines leave a text gap.
+pub fn bake_dimension_blocks_for_dxf(doc: &mut CadDocument) {
+    let handles: Vec<Handle> = doc.entities().filter_map(|entity| match entity {
+        EntityType::Dimension(d) if d.base().block_name.starts_with("*D") || d.base().block_name.starts_with("*d") => Some(d.base().common.handle),
+        _ => None,
+    }).collect();
+    for handle in handles { invalidate_dim_block(doc, handle); }
+    bake_dimension_blocks_with_text_gap(doc, true);
+}
+
+fn bake_dimension_blocks_with_text_gap(doc: &mut CadDocument, split_text_gap: bool) {
     // Keep group-10 in step and find missing blocks in one entity pass. Existing
     // `*D` blocks are the save cache: only invalidated/new dimensions enter the
     // relatively expensive geometry generation below.
@@ -1502,7 +1521,7 @@ pub fn bake_dimension_blocks(doc: &mut CadDocument) {
     let doc_ref: &CadDocument = doc;
     let generated: Vec<(Handle, Vec<EntityType>)> = dimensions
         .par_iter()
-        .map(|(handle, dim)| (*handle, explode_dimension(dim, doc_ref)))
+        .map(|(handle, dim)| (*handle, explode_dimension(dim, doc_ref, split_text_gap)))
         .collect();
 
     let mut next_block_number = 0u64;
@@ -1679,6 +1698,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn dxf_baked_linear_dimension_breaks_line_around_text() {
+        let doc = CadDocument::new();
+        let mut d = DimensionLinear::new(Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0));
+        d.definition_point = Vector3::new(0.0, 5.0, 0.0);
+        d.base.text_middle_point = Vector3::new(5.0, 5.0, 0.0);
+        let dim = Dimension::Linear(d);
+        let entities = explode_dimension(&dim, &doc, true);
+        let horizontal: Vec<_> = entities.iter().filter_map(|entity| match entity {
+            EntityType::Line(line) if (line.start.y-5.0).abs()<1.0e-6 && (line.end.y-5.0).abs()<1.0e-6 => Some((line.start.x.min(line.end.x), line.start.x.max(line.end.x))),
+            _ => None,
+        }).collect();
+        assert!(horizontal.iter().any(|(a,b)| *b < 5.0), "left segment should remain");
+        assert!(horizontal.iter().any(|(a,_)| *a > 5.0), "right segment should remain");
+        assert!(horizontal.iter().all(|(a,b)| *b < 5.0 || *a > 5.0), "line crosses text centre");
+    }
+
     /// Baking a blockless dimension resets its group-12 insertion point to the
     /// origin. OCS's commands seed it with the text anchor; left non-zero, a
     /// reader that positions the absolute-WCS block by that point draws the
@@ -1848,7 +1884,7 @@ mod tests {
     /// The line segments EXPLODE turns the dimension into.
     fn exploded_segments(dim: &Dimension, doc: &CadDocument) -> Vec<(DVec3, DVec3)> {
         let point = |v: Vector3| DVec3::new(v.x, v.y, v.z);
-        explode_dimension(dim, doc)
+        explode_dimension(dim, doc, false)
             .into_iter()
             .filter_map(|entity| match entity {
                 EntityType::Line(line) => Some((point(line.start), point(line.end))),
