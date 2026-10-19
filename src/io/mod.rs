@@ -2162,14 +2162,15 @@ where
     let styles_started = iced::time::Instant::now();
     sync_current_styles_on_save(&mut doc);
     let styles_ms = styles_started.elapsed().as_secs_f64() * 1000.0;
-    let dimensions_started = iced::time::Instant::now();
-    crate::modules::draw::modify::explode::bake_dimension_blocks(&mut doc);
-    let dimensions_ms = dimensions_started.elapsed().as_secs_f64() * 1000.0;
     let temp_path = save_temp_path(path);
-    let ext = temp_path
-        .extension()
-        .map(|e| e.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
+    let ext = temp_path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let dimensions_started = iced::time::Instant::now();
+    if ext == "dxf" {
+        crate::modules::draw::modify::explode::bake_dimension_blocks_for_dxf(&mut doc);
+    } else {
+        crate::modules::draw::modify::explode::bake_dimension_blocks(&mut doc);
+    }
+    let dimensions_ms = dimensions_started.elapsed().as_secs_f64() * 1000.0;
     let write_started = iced::time::Instant::now();
     let result = match ext.as_str() {
         "dxf" => DxfWriter::new(&doc)
