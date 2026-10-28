@@ -2364,6 +2364,10 @@ pub fn prepare_document_for_save_format(
     let styles_ms = crate::perf::elapsed_ms(styles_started);
     let dimensions_started = perf.then(iced::time::Instant::now);
     if ext.eq_ignore_ascii_case("dxf") {
+        // AutoCAD expects group 11 to hold the resolved text position. OpenCAD
+        // keeps automatic text at (0,0,0) until save so style changes and grip
+        // edits can recalculate it; materialize the point on this save copy.
+        crate::entities::dimension::materialize_automatic_text_positions_for_dxf(&mut doc);
         crate::modules::draw::modify::explode::bake_dimension_blocks_for_dxf(&mut doc);
     } else {
         crate::modules::draw::modify::explode::bake_dimension_blocks(&mut doc);
