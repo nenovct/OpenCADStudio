@@ -3220,6 +3220,52 @@ mod prepare_save_tests {
     // the worker route (`prepare_document_for_save` → `ocs_save` on the
     // worker) must produce identical bytes for the same input.
     #[test]
+    fn dxf_prepare_materializes_automatic_text_point_only_on_save_copy() {
+        let mut doc = CadDocument::new();
+        crate::io::linetypes::populate_document(&mut doc);
+        let mut dim = DimensionLinear::new(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(10.0, 0.0, 0.0),
+        );
+        dim.definition_point = Vector3::new(0.0, 5.0, 0.0);
+        dim.base.definition_point = dim.definition_point;
+        dim.base.text_middle_point = Vector3::ZERO;
+        dim.base.text_user_positioned = false;
+        dim.base.common.handle = doc.allocate_handle();
+        let handle = dim.base.common.handle;
+        doc.add_entity(EntityType::Dimension(Box::new(Dimension::Linear(dim))))
+            .unwrap();
+
+        let prepared = prepare_document_for_save_format(
+            doc.clone(),
+            codec::DxfVersion::AC1032,
+            "dxf",
+        );
+        let Some(Dimension::Linear(saved)) =
+            crate::entities::dimension::as_dimension(prepared.get_entity(handle).unwrap())
+        else {
+            panic!("dimension missing from prepared DXF copy");
+        };
+        assert!(
+            saved.base.text_middle_point.x.abs() > 1.0e-6
+                || saved.base.text_middle_point.y.abs() > 1.0e-6,
+            "DXF group 11 should contain the resolved automatic text point"
+        );
+        assert!(
+            (saved.base.text_middle_point.x - 5.0).abs() < 1.0e-6,
+            "automatic text should remain centred along the dimension line"
+        );
+
+        let Some(Dimension::Linear(live)) =
+            crate::entities::dimension::as_dimension(doc.get_entity(handle).unwrap())
+        else {
+            panic!("live dimension missing");
+        };
+        assert_eq!(live.base.text_middle_point, Vector3::ZERO);
+        assert!(!live.base.text_user_positioned);
+    }
+
+    #[test]
     fn save_to_bytes_equals_prepare_then_shared_serialize() {
         let mut doc = CadDocument::new();
         crate::io::linetypes::populate_document(&mut doc);
