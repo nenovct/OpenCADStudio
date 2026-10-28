@@ -8519,6 +8519,30 @@ pub(crate) fn dimension_text_grip_position(
 }
 
 #[cfg(test)]
+mod automatic_text_grip_tests {
+    use super::*;
+
+    #[test]
+    fn geometry_grip_clears_stale_automatic_text_point() {
+        let mut linear = DimensionLinear::new(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(10.0, 0.0, 0.0),
+        );
+        linear.definition_point = Vector3::new(0.0, 5.0, 0.0);
+        // A DXF-loaded automatic position can be non-zero while the text is
+        // still automatic. Moving a definition grip must recalculate it.
+        linear.base.text_middle_point = Vector3::new(5.0, 5.0, 0.0);
+        linear.base.text_user_positioned = false;
+        let mut dimension = Dimension::Linear(linear);
+
+        dimension.apply_grip(1, GripApply::Absolute(DVec3::new(20.0, 0.0, 0.0)));
+
+        assert_eq!(dimension.base().text_middle_point, Vector3::ZERO);
+        assert!(!dimension.base().text_user_positioned);
+    }
+}
+
+#[cfg(test)]
 mod dimtad_tests {
     use super::text_on_dim_line;
     use codec::types::Vector3;
