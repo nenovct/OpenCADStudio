@@ -1350,10 +1350,12 @@ impl Grippable for Dimension {
             return;
         }
 
-        // A manually positioned dimension text point is stored in the DWG as an
-        // absolute coordinate. Capture its relation to the old dimension geometry
-        // before moving a definition grip so that it can be reconstructed against
-        // the new geometry afterwards.
+        // Automatic text positions imported from DXF can have a non-zero
+        // stored point even though they are not user-positioned. That point is
+        // only valid for the old geometry: clear it after a geometry grip edit so
+        // the renderer can recenter the text from the dimension style. Explicitly
+        // positioned text keeps its relative placement as the geometry changes.
+        let automatic_text = !self.base().text_user_positioned;
         let relative_text = capture_dim_text_relative_position(self);
 
         match self {
@@ -1442,7 +1444,9 @@ impl Grippable for Dimension {
             },
         }
 
-        if let Some(saved) = relative_text {
+        if automatic_text {
+            reset_automatic_text_position(self.base_mut());
+        } else if let Some(saved) = relative_text {
             restore_dim_text_relative_position(self, saved);
         }
 
@@ -7889,6 +7893,59 @@ fn stored_text_point(dim: &Dimension) -> Option<Vector3> {
 pub(crate) fn reset_automatic_text_position(base: &mut DimensionBase) {
     if !base.text_user_positioned {
         base.text_middle_point = Vector3::new(0.0, 0.0, 0.0);
+    }
+}
+
+/// DXF group 11 must contain the resolved text point for AutoCAD to expose the
+/// text grip. OpenCAD uses the zero point as an automatic-placement sentinel,
+/// so materialize that position only on the save copy, using the actual style
+/// and overrides. The live document remains automatic and can recenter after edits.
+pub(crate) fn materialize_automatic_text_positions_for_dxf(doc: &mut codec::CadDocument) {
+    let handles: Vec<_> = doc
+        .entities()
+        .filter_map(|entity| match entity {
+            codec::EntityType::Dimension(dimension)
+                if !dimension.base().text_user_positioned =>
+            {
+                Some(dimension.base().common.handle)
+            }
+            _ => None,
+        })
+        .collect();
+
+    for handle in handles {
+        let Some(mut dimension) = (match doc.get_entity(handle) {
+            Some(codec::EntityType::Dimension(dimension)) => Some((**dimension).clone()),
+            _ => None,
+        }) else {
+            continue;
+        };
+
+        // Ignore any previously serialized automatic point and recompute it
+        // against the current geometry, matching the on-screen layout.
+        dimension.base_mut().text_middle_point = Vector3::new(0.0, 0.0, 0.0);
+        let style_name = dimension.base().style_name.as_str();
+        let effective_style = doc
+            .dim_styles
+            .iter()
+            .find(|style| {
+                style.name.eq_ignore_ascii_case(style_name)
+                    || (style_name.trim().is_empty()
+                        && style.name.eq_ignore_ascii_case("Standard"))
+            })
+            .map(|style| resolved_dimension_style(style, &dimension, doc));
+        let style = effective_style.as_ref();
+        let dim_scale = style
+            .map(|style| dimension_style_scale(style, 1.0))
+            .unwrap_or(1.0);
+        let text_height = style
+            .map(|style| style.dimtxt * dim_scale)
+            .unwrap_or(2.5 * dim_scale);
+        let point = dimension_text_pos_f64(&dimension, style, text_height, dim_scale);
+
+        if let Some(codec::EntityType::Dimension(dimension)) = doc.get_entity_mut(handle) {
+            dimension.base_mut().text_middle_point = point;
+        }
     }
 }
 
