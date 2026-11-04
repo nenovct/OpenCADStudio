@@ -2166,6 +2166,11 @@ where
     let ext = temp_path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
     let dimensions_started = iced::time::Instant::now();
     if ext == "dxf" {
+        // The native desktop save path writes directly with DxfWriter rather
+        // than going through prepare_document_for_save_format/save_to_bytes.
+        // Materialize automatic text positions here as well, or new/edited
+        // dimensions reach AutoCAD with group 11 still at the (0,0,0) sentinel.
+        crate::entities::dimension::materialize_automatic_text_positions_for_dxf(&mut doc);
         crate::modules::draw::modify::explode::bake_dimension_blocks_for_dxf(&mut doc);
     } else {
         crate::modules::draw::modify::explode::bake_dimension_blocks(&mut doc);
@@ -3263,6 +3268,48 @@ mod prepare_save_tests {
         };
         assert_eq!(live.base.text_middle_point, Vector3::ZERO);
         assert!(!live.base.text_user_positioned);
+    }
+
+    #[test]
+    fn desktop_dxf_save_materializes_automatic_dimension_text_point() {
+        let mut doc = CadDocument::new();
+        crate::io::linetypes::populate_document(&mut doc);
+        let mut dim = DimensionLinear::new(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(10.0, 0.0, 0.0),
+        );
+        dim.definition_point = Vector3::new(0.0, 5.0, 0.0);
+        dim.base.definition_point = dim.definition_point;
+        dim.base.text_middle_point = Vector3::ZERO;
+        dim.base.text_user_positioned = false;
+        dim.base.common.handle = doc.allocate_handle();
+        let handle = dim.base.common.handle;
+        doc.add_entity(EntityType::Dimension(Box::new(Dimension::Linear(dim))))
+            .unwrap();
+
+        let path = std::env::temp_dir().join(format!(
+            "ocs_desktop_dxf_text_grip_{}.dxf",
+            std::process::id()
+        ));
+        save_as_version(&doc, &path, codec::DxfVersion::AC1032).expect("save DXF");
+        let loaded = load_file(&path).expect("reload DXF");
+        let _ = std::fs::remove_file(&path);
+
+        let Some(Dimension::Linear(saved)) =
+            crate::entities::dimension::as_dimension(loaded.get_entity(handle).unwrap())
+        else {
+            panic!("saved dimension missing after DXF round-trip");
+        };
+        assert!(
+            saved.base.text_middle_point.x.abs() > 1.0e-6
+                || saved.base.text_middle_point.y.abs() > 1.0e-6,
+            "desktop DXF writer emitted a zero group-11 text position"
+        );
+        assert!(
+            (saved.base.text_middle_point.x - 5.0).abs() < 1.0e-6,
+            "saved text point should be centred along the dimension line"
+        );
+        assert!(!saved.base.text_user_positioned);
     }
 
     #[test]
