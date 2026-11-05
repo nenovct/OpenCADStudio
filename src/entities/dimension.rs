@@ -8626,8 +8626,8 @@ mod aligned_dimension_grip_tests {
         let Dimension::Aligned(updated) = dimension else {
             panic!("aligned dimension changed type");
         };
-        assert!((updated.definition_point.x - 6.0).abs() < 1.0e-9);
-        assert!((updated.definition_point.y - 8.0).abs() < 1.0e-9);
+        assert!((updated.definition_point.x - (8.0 - 5.0 * 4.0 / 8.94427190999916)).abs() < 1.0e-9);
+        assert!((updated.definition_point.y - (4.0 + 5.0 * 8.0 / 8.94427190999916)).abs() < 1.0e-9);
         assert_eq!(updated.base.definition_point, updated.definition_point);
     }
 }
