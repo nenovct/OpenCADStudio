@@ -1470,22 +1470,22 @@ impl Grippable for Dimension {
             },
         }
 
-        if let (Some((along, offset, z_offset)), Dimension::Aligned(d)) =
-            (aligned_definition, self)
-        {
-            let dx = d.second_point.x - d.first_point.x;
-            let dy = d.second_point.y - d.first_point.y;
-            let length = (dx * dx + dy * dy).sqrt();
-            if length > 1.0e-12 {
-                let unit_x = dx / length;
-                let unit_y = dy / length;
-                d.definition_point = Vector3::new(
-                    d.first_point.x + dx * along - unit_y * offset,
-                    d.first_point.y + dy * along + unit_x * offset,
-                    d.first_point.z
-                        + (d.second_point.z - d.first_point.z) * along
-                        + z_offset,
-                );
+        if let Some((along, offset, z_offset)) = aligned_definition {
+            if let Dimension::Aligned(d) = self {
+                let dx = d.second_point.x - d.first_point.x;
+                let dy = d.second_point.y - d.first_point.y;
+                let length = (dx * dx + dy * dy).sqrt();
+                if length > 1.0e-12 {
+                    let unit_x = dx / length;
+                    let unit_y = dy / length;
+                    d.definition_point = Vector3::new(
+                        d.first_point.x + dx * along - unit_y * offset,
+                        d.first_point.y + dy * along + unit_x * offset,
+                        d.first_point.z
+                            + (d.second_point.z - d.first_point.z) * along
+                            + z_offset,
+                    );
+                }
             }
         }
 
