@@ -1350,6 +1350,32 @@ impl Grippable for Dimension {
             return;
         }
 
+        // An aligned dimension's definition point locates its dimension line
+        // relative to the two extension origins. Keep that placement in the
+        // dimension's local frame when either endpoint is stretched; otherwise
+        // DXF group 10 can remain beyond the edited endpoint and AutoCAD derives
+        // the upper grips from inconsistent geometry.
+        let aligned_definition = match self {
+            Dimension::Aligned(d) if grip_id <= 1 => {
+                let dx = d.second_point.x - d.first_point.x;
+                let dy = d.second_point.y - d.first_point.y;
+                let length_sq = dx * dx + dy * dy;
+                if length_sq > 1.0e-24 {
+                    let length = length_sq.sqrt();
+                    let rel_x = d.definition_point.x - d.first_point.x;
+                    let rel_y = d.definition_point.y - d.first_point.y;
+                    let along = (rel_x * dx + rel_y * dy) / length_sq;
+                    let offset = (dx * rel_y - dy * rel_x) / length;
+                    let line_z = d.first_point.z
+                        + (d.second_point.z - d.first_point.z) * along;
+                    Some((along, offset, d.definition_point.z - line_z))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
         // Automatic text positions imported from DXF can have a non-zero
         // stored point even though they are not user-positioned. That point is
         // only valid for the old geometry: clear it after a geometry grip edit so
@@ -1442,6 +1468,25 @@ impl Grippable for Dimension {
                 3 => apply_to_v3(&mut d.jog_point, &apply),
                 _ => {}
             },
+        }
+
+        if let (Some((along, offset, z_offset)), Dimension::Aligned(d)) =
+            (aligned_definition, self)
+        {
+            let dx = d.second_point.x - d.first_point.x;
+            let dy = d.second_point.y - d.first_point.y;
+            let length = (dx * dx + dy * dy).sqrt();
+            if length > 1.0e-12 {
+                let unit_x = dx / length;
+                let unit_y = dy / length;
+                d.definition_point = Vector3::new(
+                    d.first_point.x + dx * along - unit_y * offset,
+                    d.first_point.y + dy * along + unit_x * offset,
+                    d.first_point.z
+                        + (d.second_point.z - d.first_point.z) * along
+                        + z_offset,
+                );
+            }
         }
 
         if automatic_text {
@@ -8539,6 +8584,51 @@ mod automatic_text_grip_tests {
 
         assert_eq!(dimension.base().text_middle_point, Vector3::ZERO);
         assert!(!dimension.base().text_user_positioned);
+    }
+}
+
+#[cfg(test)]
+mod aligned_dimension_grip_tests {
+    use super::*;
+
+    #[test]
+    fn endpoint_grip_keeps_definition_point_relative_to_aligned_dimension() {
+        let mut aligned = DimensionAligned::new(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(10.0, 0.0, 0.0),
+        );
+        aligned.definition_point = Vector3::new(10.0, 5.0, 0.0);
+        aligned.base.definition_point = aligned.definition_point;
+        let mut dimension = Dimension::Aligned(aligned);
+
+        dimension.apply_grip(1, GripApply::Absolute(DVec3::new(8.0, 0.0, 0.0)));
+
+        let Dimension::Aligned(updated) = dimension else {
+            panic!("aligned dimension changed type");
+        };
+        assert!((updated.definition_point.x - 8.0).abs() < 1.0e-9);
+        assert!((updated.definition_point.y - 5.0).abs() < 1.0e-9);
+        assert_eq!(updated.base.definition_point, updated.definition_point);
+    }
+
+    #[test]
+    fn aligned_endpoint_grip_preserves_definition_point_offset_for_oblique_dimension() {
+        let mut aligned = DimensionAligned::new(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(10.0, 0.0, 0.0),
+        );
+        aligned.definition_point = Vector3::new(10.0, 5.0, 0.0);
+        aligned.base.definition_point = aligned.definition_point;
+        let mut dimension = Dimension::Aligned(aligned);
+
+        dimension.apply_grip(1, GripApply::Absolute(DVec3::new(8.0, 4.0, 0.0)));
+
+        let Dimension::Aligned(updated) = dimension else {
+            panic!("aligned dimension changed type");
+        };
+        assert!((updated.definition_point.x - 6.0).abs() < 1.0e-9);
+        assert!((updated.definition_point.y - 8.0).abs() < 1.0e-9);
+        assert_eq!(updated.base.definition_point, updated.definition_point);
     }
 }
 
