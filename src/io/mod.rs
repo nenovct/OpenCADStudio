@@ -3145,7 +3145,10 @@ mod pre_r2000_layer_plot_tests {
 #[cfg(test)]
 mod prepare_save_tests {
     use super::*;
-    use codec::entities::{Dimension, DimensionLinear};
+    use codec::entities::{Dimension, DimensionAligned, DimensionLinear};
+    use crate::entities::traits::Grippable;
+    use crate::scene::model::object::GripApply;
+    use glam::DVec3;
     use codec::tables::TextStyle;
     use codec::types::Vector3;
 
@@ -3310,6 +3313,61 @@ mod prepare_save_tests {
             "saved text point should be centred along the dimension line"
         );
         assert!(!saved.base.text_user_positioned);
+    }
+
+
+    // Endpoint grip edits must survive the actual DXF writer/reader round-trip.
+    // This guards DIMENSION groups 10/13/14, not only the in-memory grip math.
+    #[test]
+    fn dxf_roundtrip_preserves_grip_edited_aligned_dimension_points() {
+        let mut doc = CadDocument::new();
+        crate::io::linetypes::populate_document(&mut doc);
+
+        let mut aligned = DimensionAligned::new(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(10.0, 0.0, 0.0),
+        );
+        aligned.definition_point = Vector3::new(10.0, 5.0, 0.0);
+        aligned.base.definition_point = aligned.definition_point;
+        let mut dimension = Dimension::Aligned(aligned);
+
+        // Stretch the second extension origin before the first save.
+        dimension.apply_grip(1, GripApply::Absolute(DVec3::new(8.0, 0.0, 0.0)));
+        let Dimension::Aligned(edited) = dimension else {
+            panic!("aligned dimension changed type");
+        };
+        let expected_first = edited.first_point;
+        let expected_second = edited.second_point;
+        let expected_definition = edited.definition_point;
+
+        let mut edited = edited;
+        edited.base.common.handle = doc.allocate_handle();
+        let handle = edited.base.common.handle;
+        doc.add_entity(EntityType::Dimension(Box::new(Dimension::Aligned(edited))))
+            .unwrap();
+
+        let path = std::env::temp_dir().join(format!(
+            "ocs_grip_edited_aligned_dim_{}.dxf",
+            std::process::id()
+        ));
+        save_as_version(&doc, &path, codec::DxfVersion::AC1032).expect("save DXF");
+        let loaded = load_file(&path).expect("reload DXF");
+        let _ = std::fs::remove_file(&path);
+
+        let Some(Dimension::Aligned(saved)) =
+            crate::entities::dimension::as_dimension(loaded.get_entity(handle).unwrap())
+        else {
+            panic!("saved aligned dimension missing after DXF round-trip");
+        };
+        let close = |a: Vector3, b: Vector3| {
+            (a.x - b.x).abs() < 1.0e-8
+                && (a.y - b.y).abs() < 1.0e-8
+                && (a.z - b.z).abs() < 1.0e-8
+        };
+        assert!(close(saved.first_point, expected_first), "group 13 changed: {:?} != {:?}", saved.first_point, expected_first);
+        assert!(close(saved.second_point, expected_second), "group 14 changed: {:?} != {:?}", saved.second_point, expected_second);
+        assert!(close(saved.definition_point, expected_definition), "dimension definition point changed: {:?} != {:?}", saved.definition_point, expected_definition);
+        assert!(close(saved.base.definition_point, expected_definition), "group 10/base definition point is stale");
     }
 
     #[test]
